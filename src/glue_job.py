@@ -76,13 +76,24 @@ def main():
             return
 
         # ---------------------------------------------------------------------
-        # STEP 2: TRANSFORMATIONS & DATA CLEANING
+        # STEP 2: TRANSFORMATIONS & DATA CLEANING (Dynamic Column Mapping)
         # ---------------------------------------------------------------------
+        cols = raw_sales_df.columns
+
+        # Dynamically map flexible column aliases
+        customer_col = "customer_name" if "customer_name" in cols else ("customer_id" if "customer_id" in cols else "id")
+        status_col = "status" if "status" in cols else ("category" if "category" in cols else lit("COMPLETED"))
+        quantity_expr = col("quantity").cast("integer") if "quantity" in cols else lit(1)
+        amount_expr = col("amount").cast("double") if "amount" in cols else lit(0.0)
+        id_col = "id" if "id" in cols else customer_col
+
         cleaned_sales_df = raw_sales_df \
+            .withColumn("id", col(id_col)) \
             .withColumn("product", trim(col("product"))) \
-            .withColumn("customer_name", trim(col("customer_name"))) \
-            .withColumn("amount", col("amount").cast("double")) \
-            .withColumn("quantity", col("quantity").cast("integer")) \
+            .withColumn("customer_name", trim(col(customer_col))) \
+            .withColumn("amount", amount_expr) \
+            .withColumn("quantity", quantity_expr) \
+            .withColumn("status", col(status_col)) \
             .withColumn("total_price", round(col("amount") * col("quantity"), 2)) \
             .withColumn("processed_at", date_format(current_timestamp(), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"))
 
@@ -101,8 +112,8 @@ def main():
             col("id"),
             col("customer_name"),
             col("product"),
-            col("category"),
-            col("supplier"),
+            coalesce(products_df["category"], cleaned_sales_df["status"], lit("General")).alias("category"),
+            coalesce(products_df["supplier"], lit("Unknown")).alias("supplier"),
             col("amount"),
             col("quantity"),
             col("total_price"),

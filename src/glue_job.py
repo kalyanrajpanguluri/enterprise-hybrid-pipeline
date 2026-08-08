@@ -51,12 +51,12 @@ def main():
         elif s3_input_path.endswith('.csv'):
             raw_sales_df = spark.read.option("header", "true").option("inferSchema", "true").csv(s3_input_path)
         else:
-            # Check raw/ subfolder first, then bucket root
+            # Check raw/ subfolder first, then bucket root *.csv
             try:
                 raw_sales_df = spark.read.option("header", "true").option("inferSchema", "true").csv(s3_input_path.rstrip('/') + "/raw/")
             except Exception:
                 try:
-                    raw_sales_df = spark.read.option("header", "true").option("inferSchema", "true").csv(s3_input_path)
+                    raw_sales_df = spark.read.option("header", "true").option("inferSchema", "true").csv(s3_input_path.rstrip('/') + "/*.csv")
                 except Exception as read_err:
                     logger.warning(f"[RAW LAYER] No input CSV files found at {s3_input_path}: {str(read_err)}")
                     job.commit()

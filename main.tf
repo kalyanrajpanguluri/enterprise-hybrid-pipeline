@@ -325,13 +325,6 @@ resource "aws_cloudwatch_event_rule" "s3_upload" {
       bucket = {
         name = [aws_s3_bucket.ingestion.bucket]
       }
-      object = {
-        key = [{
-          "anything-but" = {
-            prefix = "silver/"
-          }
-        }]
-      }
     }
   })
 }

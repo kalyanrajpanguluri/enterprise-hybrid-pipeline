@@ -8,6 +8,16 @@ output "s3_script_bucket" {
   value       = aws_s3_bucket.script.bucket
 }
 
+output "lambda_validator_function_name" {
+  description = "Name of the AWS Lambda Validator function"
+  value       = aws_lambda_function.validator.function_name
+}
+
+output "step_functions_state_machine_arn" {
+  description = "ARN of the AWS Step Functions State Machine Orchestrator"
+  value       = aws_sfn_state_machine.pipeline_orchestrator.arn
+}
+
 output "glue_job_name" {
   description = "Name of the AWS Glue ETL Job"
   value       = aws_glue_job.pipeline_processor.name
@@ -16,11 +26,6 @@ output "glue_job_name" {
 output "eventbridge_rule_arn" {
   description = "ARN of the EventBridge trigger rule"
   value       = aws_cloudwatch_event_rule.s3_upload.arn
-}
-
-output "glue_workflow_name" {
-  description = "Name of the AWS Glue Workflow triggered by EventBridge"
-  value       = aws_glue_workflow.pipeline_workflow.name
 }
 
 output "s3_raw_path" {

@@ -29,6 +29,14 @@ resource "aws_s3_object" "gold_folder" {
   key    = "gold/"
 }
 
+# Auto-upload sample sales dataset to raw/ on terraform apply
+resource "aws_s3_object" "sales_raw_sample" {
+  bucket = aws_s3_bucket.ingestion.id
+  key    = "raw/sales.csv"
+  source = "${path.module}/sample_data/sales.csv"
+  etag   = filemd5("${path.module}/sample_data/sales.csv")
+}
+
 resource "aws_s3_bucket_public_access_block" "ingestion" {
   bucket = aws_s3_bucket.ingestion.id
 
@@ -257,24 +265,87 @@ resource "aws_glue_job" "pipeline_processor" {
 }
 
 # -----------------------------------------------------------------------------
-# AWS Glue Workflow & Trigger (Required for EventBridge target integration)
+# AWS Step Functions Pipeline Orchestrator
 # -----------------------------------------------------------------------------
-resource "aws_glue_workflow" "pipeline_workflow" {
-  name = "${var.project_name}-workflow-${random_string.suffix.result}"
+resource "aws_iam_role" "sfn_role" {
+  name = "${var.project_name}-sfn-role-${random_string.suffix.result}"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "states.amazonaws.com"
+        }
+      }
+    ]
+  })
 }
 
-resource "aws_glue_trigger" "workflow_trigger" {
-  name          = "${var.project_name}-trigger-${random_string.suffix.result}"
-  type          = "ON_DEMAND"
-  workflow_name = aws_glue_workflow.pipeline_workflow.name
+resource "aws_iam_policy" "sfn_policy" {
+  name        = "${var.project_name}-sfn-policy-${random_string.suffix.result}"
+  description = "Permissions for Step Functions to execute Lambda and Glue job"
 
-  actions {
-    job_name = aws_glue_job.pipeline_processor.name
-  }
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = aws_lambda_function.validator.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "glue:StartJobRun",
+          "glue:GetJobRun",
+          "glue:GetJobRuns",
+          "glue:BatchStopJobRun"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "sfn_attach" {
+  role       = aws_iam_role.sfn_role.name
+  policy_arn = aws_iam_policy.sfn_policy.arn
+}
+
+resource "aws_sfn_state_machine" "pipeline_orchestrator" {
+  name     = "${var.project_name}-orchestrator-${random_string.suffix.result}"
+  role_arn = aws_iam_role.sfn_role.arn
+
+  definition = jsonencode({
+    Comment = "Enterprise Hybrid Medallion Data Pipeline Orchestrator"
+    StartAt = "ValidateIncomingFile"
+    States = {
+      ValidateIncomingFile = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          "FunctionName" = aws_lambda_function.validator.arn
+          "Payload"      = "$.detail"
+        }
+        Next = "RunGluePySparkETL"
+      }
+      RunGluePySparkETL = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::glue:startJobRun.sync"
+        Parameters = {
+          "JobName" = aws_glue_job.pipeline_processor.name
+        }
+        End = true
+      }
+    }
+  })
 }
 
 # -----------------------------------------------------------------------------
-# Amazon EventBridge Orchestration Trigger
+# Amazon EventBridge Orchestration Trigger (Triggers Step Functions)
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "eventbridge_role" {
   name = "${var.project_name}-eb-role-${random_string.suffix.result}"
@@ -295,15 +366,15 @@ resource "aws_iam_role" "eventbridge_role" {
 
 resource "aws_iam_policy" "eventbridge_policy" {
   name        = "${var.project_name}-eb-policy-${random_string.suffix.result}"
-  description = "Allows EventBridge to trigger AWS Glue workflow"
+  description = "Allows EventBridge to trigger AWS Step Functions State Machine"
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
         Effect   = "Allow"
-        Action   = "glue:StartWorkflowRun"
-        Resource = aws_glue_workflow.pipeline_workflow.arn
+        Action   = "states:StartExecution"
+        Resource = aws_sfn_state_machine.pipeline_orchestrator.arn
       }
     ]
   })
@@ -316,7 +387,7 @@ resource "aws_iam_role_policy_attachment" "eventbridge_attach" {
 
 resource "aws_cloudwatch_event_rule" "s3_upload" {
   name        = "${var.project_name}-s3-trigger-${random_string.suffix.result}"
-  description = "Triggers AWS Glue Workflow when a CSV or JSON file is uploaded to S3 ingestion bucket"
+  description = "Triggers AWS Step Functions when a CSV or JSON file is uploaded to S3 ingestion bucket"
 
   event_pattern = jsonencode({
     source      = ["aws.s3"]
@@ -329,9 +400,9 @@ resource "aws_cloudwatch_event_rule" "s3_upload" {
   })
 }
 
-resource "aws_cloudwatch_event_target" "trigger_glue" {
+resource "aws_cloudwatch_event_target" "trigger_sfn" {
   rule      = aws_cloudwatch_event_rule.s3_upload.name
-  target_id = "TriggerAWSGlueWorkflow"
-  arn       = aws_glue_workflow.pipeline_workflow.arn
+  target_id = "TriggerStepFunctionsStateMachine"
+  arn       = aws_sfn_state_machine.pipeline_orchestrator.arn
   role_arn  = aws_iam_role.eventbridge_role.arn
 }
